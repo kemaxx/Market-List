@@ -7,13 +7,13 @@ from datetime import timedelta
 import json
 import math
 from dotenv import load_dotenv
+load_dotenv()
 import os
-
 
 class MarketList():
     def __init__(self):
-        load_dotenv()
-        self.gc = gspread.service_account(os.environ.get("STEAM_TALENT_SERVICE_ACCOUNT"))
+        STEAM_TALENT_SERVICE_ACCOUNT = os.environ.get("STEAM_TALENT_ACCOUNT")
+        self.gc = gspread.service_account(STEAM_TALENT_SERVICE_ACCOUNT)
 
     def get_top_x_number_of_items_to_buy(self, x_items=100):
         issue_df = self.get_issue_voucher()
@@ -46,7 +46,6 @@ class MarketList():
 
         lower_bound, upper_bound = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
 
-
         crt1 = df["diff"] <= lower_bound
         crt2 = df["diff"] >= upper_bound
 
@@ -59,7 +58,6 @@ class MarketList():
 
         # Your timedelta string
         timedelta_str = str(f)
-
 
         # Use regular expression to extract days, hours, minutes, and seconds
         match = re.match(r"Timedelta\('(\d+) days (\d+):(\d+):(\d+)(.(\d+))*'\)", timedelta_str)
@@ -179,6 +177,33 @@ class MarketList():
         df = df.loc[~(df["Dept"]=="FUNCTION"),:]
         return df
 
+    def process_procurement(self):
+        """
+        This method pulls purchases, processes it and returns it as a pandas dataframe.
+        :return:
+        """
+        df = pd.read_excel("zecool_purchases.xlsx", usecols=[1, 2, 3, 12, 13, 14])
+        df = df[:-1]
+        df.columns = ['Date', 'Item name', 'Category', 'Portion', 'Unit Cost', 'Total Amount']
+        df["Date"] = pd.to_datetime(df["Date"])
+        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+        df = df.dropna(thresh=4, axis=0)
+        return df
+
+    def process_batch_stock(self,batch_description, item_qty, item_cost):
+        import re
+        batch_description = batch_description.replace("Batch", "").strip()
+        item_cost = str(item_cost)[:2]
+        item_qty = str(item_qty)
+        match = re.match("\((.*)\)", batch_description)
+        grp = match.group()
+        cleaned_txt = re.sub("\(*\)*", "", grp)
+        n_item_n_amt = cleaned_txt.split("X")[1].split("/")
+        n_item_n_amt[0] = re.sub("\d+", str(item_qty), n_item_n_amt[0])
+        n_item_n_amt[1] = re.sub("\d+", str(item_cost), n_item_n_amt[1])
+        average_value = cleaned_txt.split("X")[0]
+        return str("Batch(") + average_value + "X" + n_item_n_amt[0] + str("/") + n_item_n_amt[1] + str(")")
+
     def create_market_list(self, x_days_period=30):
         gc = self.gc
         sheet = gc.open_by_key("1powB6YQD3WzpgZowXR-vsB9h9g-4FKzJ5fzXlZqEB0k")
@@ -194,10 +219,8 @@ class MarketList():
             time.sleep(2)
             item_mv = self.compute_moving_average(item,x_days_period)
 
-
             if np.isnan(item_mv):
                 item_mv = (issues_df.loc[issues_df["Item name"] == item,:]["Usage"].mean()*x_days_period)/self.avg_col_freq
-
 
             item_stock_df = None
             item_issue_df = None
@@ -209,6 +232,15 @@ class MarketList():
             b_name = item_df["Bundle_qty Unit"].values[0]
             rate = item_df["Rate"].values[0]
 
+            if "Batch" in b_name:
+                purchase_df = self.process_procurement()
+                item_purchase_df = purchase_df.loc[purchase_df["Item name"]==item,:]
+                real_purchase_item_df = item_purchase_df.loc[item_purchase_df["Total Amount"]>1,:]
+                last_three_purchase = real_purchase_item_df.tail(3)
+                mean_amt = round(last_three_purchase["Total Amount"].mean(),-3)
+                mean_received = math.ceil(last_three_purchase["Portion"].mean())
+
+                b_name = self.process_batch_stock(b_name,mean_received,mean_amt)
             buy = None
             if case_qty==1:
                 buy = item_mv//b_qty
@@ -219,7 +251,6 @@ class MarketList():
               buy = 1
 
             buy = round(buy,0)
-
             buy_str = str(buy)+f" {b_name}"
             mkl_rate = None
             mkl_amt = None
@@ -236,7 +267,6 @@ class MarketList():
             print(f"Buy {round(buy,0)} {b_name} of {item}")
 
             worksheet.append_rows([[item,json.dumps(None),buy_str,str(mkl_rate),str(mkl_amt)]])
-
 if __name__ == "__main__":
     mkl = MarketList()
     mkl.create_market_list()
