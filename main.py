@@ -7,8 +7,13 @@ from datetime import timedelta
 import json
 import math
 from dotenv import load_dotenv
+
 load_dotenv()
 import os
+import warnings
+
+warnings.filterwarnings("ignore")
+
 
 class MarketList():
     def __init__(self):
@@ -51,20 +56,21 @@ class MarketList():
 
         avg_date_time = df.where(~(crt1 | crt2))['diff'].mean()
 
-        #print("Average Collection Rate Df: ")
-        #print(avg_date_time)
+        # print("Average Collection Rate Df: ")
+        # print(avg_date_time)
         f = f"Timedelta('{avg_date_time}')"
-        #print("Time delta: "+str(f))
+        # print("Time delta: "+str(f))
 
         # Your timedelta string
         timedelta_str = str(f)
 
         # Use regular expression to extract days, hours, minutes, and seconds
         match = re.match(r"Timedelta\('(\d+) days (\d+):(\d+):(\d+)(.(\d+))*'\)", timedelta_str)
-        #print("Time delta group match: "+str(match))
+        # print("Time delta group match: "+str(match))
 
         if match:
-            days,hours,minutes,seconds = int(match.groups()[0]),int(match.groups()[1]),int(match.groups()[2]),int(match.groups()[3])
+            days, hours, minutes, seconds = int(match.groups()[0]), int(match.groups()[1]), int(match.groups()[2]), int(
+                match.groups()[3])
             time_part_timedelta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
             if hours >= 13:
@@ -82,7 +88,7 @@ class MarketList():
         global top_item_df
         issues_df = self.get_issue_voucher()  # top_item_df.loc[top_item_df["Item name"] == item, :]
         item_df = issues_df.loc[issues_df["Item name"] == item, :]
-        #print("Item Df: "+str(item_df))
+        # print("Item Df: "+str(item_df))
 
         if not item_df.empty:
 
@@ -90,13 +96,13 @@ class MarketList():
 
             item_df['Mv_Ag'] = item_df["Usage"].rolling(window=period).mean()
 
-            #print("Mv Column: "+str(item_df['Mv_Ag']))
+            # print("Mv Column: "+str(item_df['Mv_Ag']))
 
             # print(item_df)
             period_roll_value = item_df["Mv_Ag"].tail(period).mean() * period
-            #print("MV "+str(period_roll_value))
+            # print("MV "+str(period_roll_value))
 
-            #print("Av_Col "+str(self.avg_col_freq))
+            # print("Av_Col "+str(self.avg_col_freq))
 
             # print(period_roll_value)
             if np.isnan(period_roll_value):
@@ -104,7 +110,7 @@ class MarketList():
                 i_df_sample = i_df.resample("M").sum()
                 i_df["M_avg"] = i_df_sample["Usage"] / i_df_sample.index.days_in_month
                 # i_df = i_df.reset_index()
-                return i_df["M_avg"].mean()*period
+                return i_df["M_avg"].mean() * period
             else:
 
                 if np.isnan(period_roll_value / self.avg_col_freq):
@@ -172,9 +178,9 @@ class MarketList():
         df["Usage"] = df["Usage"].str.replace(",", "").astype(float)
         df["Af_Qty"] = df["Af_Qty"].str.replace(",", "").astype(float)
 
-        df = df.groupby(["Date","Item name"], as_index=False).sum()
+        df = df.groupby(["Date", "Item name"], as_index=False).sum()
 
-        df = df.loc[~(df["Dept"]=="FUNCTION"),:]
+        df = df.loc[~(df["Dept"] == "FUNCTION"), :]
         return df
 
     def process_procurement(self):
@@ -190,10 +196,17 @@ class MarketList():
         df = df.dropna(thresh=4, axis=0)
         return df
 
-    def process_batch_stock(self,batch_description, item_qty, item_cost):
+    def process_batch_stock(self, batch_description, item_qty, item_cost):
+
         import re
         batch_description = batch_description.replace("Batch", "").strip()
-        item_cost = str(item_cost)[:2]
+        item_cost = str(item_cost)[:-2]
+
+        print("Length of Item Cost " + str(len(item_cost)))
+        if len(item_cost) > 4:
+            item_cost = str(item_cost)[:2]
+        else:
+            item_cost = str(item_cost)[:1]
         item_qty = str(item_qty)
         match = re.match("\((.*)\)", batch_description)
         grp = match.group()
@@ -203,6 +216,16 @@ class MarketList():
         n_item_n_amt[1] = re.sub("\d+", str(item_cost), n_item_n_amt[1])
         average_value = cleaned_txt.split("X")[0]
         return str("Batch(") + average_value + "X" + n_item_n_amt[0] + str("/") + n_item_n_amt[1] + str(")")
+
+    def skip_item_for_purchase_sig_test(self,reorder_level,forcasted_qty):
+        ratio = (reorder_level/forcasted_qty)
+        deviation = abs(ratio-1)
+
+        significance_threshold = 0.05 # Deviation cut off of 5%
+        if deviation<significance_threshold:
+            return False
+        else:
+            return True
 
     def create_market_list(self, x_days_period=30):
         gc = self.gc
@@ -215,58 +238,100 @@ class MarketList():
         items_to_buy = sorted(self.get_top_x_number_of_items_to_buy())
 
         for item in items_to_buy:
-
             time.sleep(2)
-            item_mv = self.compute_moving_average(item,x_days_period)
+            item_mv = self.compute_moving_average(item, x_days_period)
 
             if np.isnan(item_mv):
-                item_mv = (issues_df.loc[issues_df["Item name"] == item,:]["Usage"].mean()*x_days_period)/self.avg_col_freq
+                item_mv = (issues_df.loc[issues_df["Item name"] == item, :][
+                               "Usage"].mean() * x_days_period) / self.avg_col_freq
 
             item_stock_df = None
             item_issue_df = None
 
-            item_df = stock_df.loc[stock_df["Stock Name"] == item,:]
+            item_df = stock_df.loc[stock_df["Stock Name"] == item, :]
             ptn_name = item_df["Ptn Name"].values[0]
             case_qty = item_df["Case Qty"].values[0]
             b_qty = item_df["Bundle Qty"].values[0]
             b_name = item_df["Bundle_qty Unit"].values[0]
             rate = item_df["Rate"].values[0]
+            current_bal = float(item_df["Current Bal"].values[0])
+            if current_bal<0:
+                current_bal=0
+
+            if current_bal >= item_mv:
+                if self.skip_item_for_purchase_sig_test(current_bal,item_mv):
+                    continue
 
             if "Batch" in b_name:
                 purchase_df = self.process_procurement()
-                item_purchase_df = purchase_df.loc[purchase_df["Item name"]==item,:]
-                real_purchase_item_df = item_purchase_df.loc[item_purchase_df["Total Amount"]>1,:]
+                item_purchase_df = purchase_df.loc[purchase_df["Item name"] == item, :]
+                real_purchase_item_df = item_purchase_df.loc[item_purchase_df["Total Amount"] > 1, :]
                 last_three_purchase = real_purchase_item_df.tail(3)
-                mean_amt = round(last_three_purchase["Total Amount"].mean(),-3)
+                mean_amt = round(last_three_purchase["Total Amount"].mean(), -3)
                 mean_received = math.ceil(last_three_purchase["Portion"].mean())
 
-                b_name = self.process_batch_stock(b_name,mean_received,mean_amt)
+                b_name = self.process_batch_stock(b_name, mean_received, mean_amt)
+
+            # Modifications - Start
+            reorder_qty = None
+            reorder_level_str = None
+            if current_bal < b_qty:
+                reorder_level = current_bal
+                reorder_level_str = str(current_bal) + " " + str(ptn_name)
+
+            elif current_bal > b_qty and b_qty == 1:
+                reorder_level = current_bal // b_qty
+                reorder_level_str = str(current_bal // b_qty) + " " + str(b_name)
+            else:
+                reorder_level = current_bal // b_qty
+                reorder_level_str = str(current_bal // b_qty) + " " + str(b_name)
+
             buy = None
-            if case_qty==1:
-                buy = item_mv//b_qty
+            buy_flag = None
+            #More modifications:
+            print()
+            print(item)
+            print("Current Bal: " + str(current_bal))
+            print(f"Moving Average: {math.ceil(item_mv)}")
+
+            item_mv = math.ceil(item_mv-current_bal)
+            if item_mv<0:
+                item_mv = math.ceil(current_bal-item_mv)
+
+            if case_qty == 1:
+                buy = item_mv // b_qty
+                buy_flag = item_mv/b_qty
             else:
                 buy = item_mv // case_qty
+                buy_flag = item_mv / b_qty
 
-            if buy<0.5:
-              buy = 1
+            #buy = buy-current_bal
 
-            buy = round(buy,0)
-            buy_str = str(buy)+f" {b_name}"
+            if buy_flag < 0.5:
+                buy = 0.5
+            elif 0.5 <= buy_flag < 1:
+                buy = 1
+
+            buy = round(buy, 1)
+            buy_str = str(buy) + f" {b_name}"
             mkl_rate = None
             mkl_amt = None
-            if case_qty==1:
-                mkl_rate = round((rate*b_qty),-2)
+            if case_qty == 1:
+                mkl_rate = round((rate * b_qty), -2)
             else:
-                if buy<b_qty:
-                    buy_str = str((b_qty//buy)) + f" {b_name}"
-                    buy = b_qty//buy
-                mkl_rate = round((rate*case_qty*b_qty),-2)
+                if buy < b_qty:
+                    buy_str = str((b_qty // buy)) + f" {b_name}"
+                    buy =  buy // b_qty
+                mkl_rate = round((rate * case_qty * b_qty), -2)
 
-            mkl_amt = round(mkl_rate*buy,0)
+            mkl_amt = round(mkl_rate * buy, 0)
 
-            print(f"Buy {round(buy,0)} {b_name} of {item}")
 
-            worksheet.append_rows([[item,json.dumps(None),buy_str,str(mkl_rate),str(mkl_amt)]])
+
+            time.sleep(1)
+            worksheet.append_rows([[item, str(reorder_level_str), buy_str, str(mkl_rate), str(mkl_amt)]])
+
+
 if __name__ == "__main__":
     mkl = MarketList()
     mkl.create_market_list()
